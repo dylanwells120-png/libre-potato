@@ -26,7 +26,7 @@ Use a dedicated folder such as `/home/dylan/Potato`. Do not point it at your who
 
 ## Install it on the Debian machine
 
-The repo is private, so sign in to GitHub on that machine first. Download the ZIP from the Code button on the repo page, or clone it:
+Download the ZIP from the Code button on the repo page, or clone it. No GitHub login is required:
 
 ```bash
 sudo apt update
