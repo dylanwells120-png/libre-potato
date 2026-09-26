@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}{{ name }} · Libre Potato{% endblock %}
+{% block body %}
+<header class="top">
+  <div>
+    <p class="mark">Libre Potato</p>
+    <h1>{{ name }}</h1>
+  </div>
+  <a class="quiet button-link" href="{{ folder_url }}">Back</a>
+</header>
+
+<nav class="crumbs" aria-label="Folder">
+  {% for crumb in breadcrumbs %}
+    {% if not loop.first %}<span aria-hidden="true">/</span>{% endif %}
+    {% if crumb.current %}
+      <span aria-current="page">{{ crumb.name }}</span>
+    {% else %}
+      <a href="{{ crumb.url }}">{{ crumb.name }}</a>
+    {% endif %}
+  {% endfor %}
+</nav>
+
+<p class="file-meta">{{ size }} · {{ modified }}</p>
+<p><a class="button-link" href="{{ download_url }}">Download</a></p>
+
+{% if kind == "image" and raw_url %}
+<img class="preview" src="{{ raw_url }}" alt="{{ name }}">
+{% elif kind == "pdf" and raw_url %}
+<iframe class="preview frame" src="{{ raw_url }}" title="{{ name }}"></iframe>
+{% elif kind == "audio" and raw_url %}
+<audio class="preview" controls src="{{ raw_url }}"></audio>
+{% elif kind == "video" and raw_url %}
+<video class="preview" controls src="{{ raw_url }}"></video>
+{% elif kind == "text" and too_big %}
+<p class="empty">This text file is too large to preview here. Download it instead.</p>
+{% elif kind == "text" %}
+<pre class="preview text">{{ preview }}</pre>
+{% else %}
+<p class="empty">Preview is not available for this type. Download it to open it on this device.</p>
+{% endif %}
+{% endblock %}

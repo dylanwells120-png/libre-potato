@@ -1,0 +1,15 @@
+[Unit]
+Description=Libre Potato file server
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/libre-potato
+EnvironmentFile=%h/libre-potato/.env
+ExecStart=%h/libre-potato/.venv/bin/python -m app
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
