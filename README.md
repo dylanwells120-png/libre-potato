@@ -24,54 +24,21 @@ The password is stored as a scrypt hash. The session cookie is marked `HttpOnly`
 
 Use a dedicated folder such as `/home/dylan/Potato`. Do not point it at your whole home directory.
 
-## Run it on Debian
+## Install it on the Debian machine
 
-Install Git and Python, then clone this private repo:
+The repo is private, so sign in to GitHub on that machine first. Download the ZIP from the Code button on the repo page, or clone it:
 
 ```bash
 sudo apt update
 sudo apt install -y git python3 python3-venv python3-pip
-git clone git@github.com:dylanwells120-png/libre-potato.git ~/libre-potato
+git clone https://github.com/dylanwells120-png/libre-potato.git ~/libre-potato
 cd ~/libre-potato
-./scripts/setup.sh
+./packaging/install.sh
 ```
 
-Create the folder you want to reach, then edit `~/libre-potato/.env`:
+The installer asks for the folder you want to reach (it suggests `~/Potato`), a username, and a password. It stores a hash of the password, installs the dependencies, and starts a background service for your user. Run it as yourself, not with sudo, so the service can read your files.
 
-```bash
-mkdir -p ~/Potato
-chmod 600 ~/libre-potato/.env
-```
-
-Set `LIBRE_POTATO_FILES_ROOT` to that folder (`/home/dylan/Potato`). Then, from the repo with the virtualenv active:
-
-```bash
-. .venv/bin/activate
-python -m app.hash_password
-python -c "import secrets; print(secrets.token_urlsafe(32))"
-```
-
-Put the hash in `LIBRE_POTATO_PASSWORD_HASH` and the random string in `LIBRE_POTATO_SECRET_KEY`.
-
-Check that it serves pages:
-
-```bash
-python -m app
-```
-
-Open `http://127.0.0.1:8787` on the Debian machine and sign in. Stop it with Ctrl+C once that works.
-
-### Start at boot
-
-GNOME does not need to be logged in if lingering is enabled. This user service runs as you, so it can read your folder.
-
-```bash
-mkdir -p ~/.config/systemd/user
-cp ~/libre-potato/deploy/libre-potato.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now libre-potato
-sudo loginctl enable-linger "$USER"
-```
+Open `http://127.0.0.1:8787` on the Debian machine and sign in.
 
 Logs:
 
@@ -79,24 +46,39 @@ Logs:
 journalctl --user -u libre-potato -f
 ```
 
-### Open it from your phone
+So it keeps running after you log out of GNOME:
 
-Install Tailscale on the Debian machine and on the phone, and sign in to the same account.
+```bash
+sudo loginctl enable-linger "$USER"
+```
+
+## Reach it from another device
+
+The server listens only on that machine. Tailscale is the path from your phone or another computer: install it on both devices, sign in to the same account, and leave the server on localhost.
 
 ```bash
 curl -fsSL https://tailscale.com/install.sh | sh
 sudo tailscale up
-```
-
-Then either open `http://<the-machine-tailscale-ip>:8787` after changing `LIBRE_POTATO_HOST` to `0.0.0.0`, or keep the app on localhost and use Tailscale Serve so only your tailnet can reach it:
-
-```bash
 sudo tailscale serve --bg 8787
 ```
 
-`tailscale serve` prints an HTTPS address. Use that from the phone. Leave `LIBRE_POTATO_HOST` at `127.0.0.1`. Set `LIBRE_POTATO_HTTPS_ONLY=1` in `.env` and restart the service so the sign-in cookie is only sent over HTTPS.
+`tailscale serve` prints an HTTPS address. Use that address in a browser, or paste it into the desktop client. Set `LIBRE_POTATO_HTTPS_ONLY=1` in `~/.config/libre-potato/env` and restart the service (`systemctl --user restart libre-potato`) so the browser sign-in cookie is only sent over HTTPS.
 
-If you later put it on a public hostname, terminate HTTPS in Caddy or nginx and proxy to `127.0.0.1:8787`. Keep the app bound to localhost.
+A phone uses the browser at that address. Another computer can use the browser or the desktop client below.
+
+## Desktop client
+
+`client/` is a separate app for a Mac or another Linux computer. Download this same repo there, then:
+
+```bash
+cd libre-potato/client
+./setup.sh
+./run.sh
+```
+
+On Debian, install `python3-tk` first if setup says Tk is missing. Sign in with the Tailscale address, the username, and the password from the installer. The app saves the address and a sign-in token, not the password.
+
+From the window you can open folders, download a file, upload files, and create a folder.
 
 ## Develop
 

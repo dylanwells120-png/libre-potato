@@ -151,6 +151,55 @@ def test_upload_over_the_limit_removes_the_partial_file(tmp_path: Path, password
         assert not (tmp_path / "big.bin").exists()
 
 
+def test_api_token_lists_uploads_and_downloads(tmp_path: Path, password_hash: str) -> None:
+    (tmp_path / "readme.txt").write_text("hello from potato", encoding="utf-8")
+    with make_client(tmp_path, password_hash) as client:
+        denied = client.get("/api/files")
+        assert denied.status_code == 401
+        bad = client.post("/api/login", json={"username": "dylan", "password": "not the password"})
+        assert bad.status_code == 401
+
+        signed = client.post("/api/login", json={"username": "dylan", "password": PASSWORD})
+        assert signed.status_code == 200
+        token = signed.json()["token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        listing = client.get("/api/files", headers=headers)
+        assert listing.status_code == 200
+        names = [entry["name"] for entry in listing.json()["entries"]]
+        assert names == ["readme.txt"]
+
+        downloaded = client.get("/download/readme.txt", headers=headers)
+        assert downloaded.content == b"hello from potato"
+        escaped = client.get("/api/files", headers=headers, params={"path": "../"})
+        assert escaped.status_code == 404
+        assert escaped.json()["error"]
+        hidden = client.get("/download/.hidden", headers=headers)
+        assert hidden.status_code == 404
+        assert hidden.json()["error"]
+
+        created = client.post(
+            "/mkdir",
+            headers=headers,
+            data={"directory": "", "name": "Notes"},
+        )
+        assert created.status_code == 200
+        assert (tmp_path / "Notes").is_dir()
+
+        uploaded = client.post(
+            "/upload",
+            headers=headers,
+            data={"directory": "Notes"},
+            files={"upload_file": ("note.txt", b"from the client", "text/plain")},
+        )
+        assert uploaded.status_code == 200
+        assert (tmp_path / "Notes" / "note.txt").read_text(encoding="utf-8") == "from the client"
+
+        nested = client.get("/api/files", headers=headers, params={"path": "Notes"})
+        assert nested.json()["parent"] == ""
+        assert nested.json()["entries"][0]["name"] == "note.txt"
+
+
 def test_settings_refuse_the_filesystem_root(password_hash: str) -> None:
     with pytest.raises(ValueError):
         Settings(

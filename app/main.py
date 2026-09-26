@@ -13,7 +13,8 @@ from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -110,12 +111,41 @@ def create_app(settings: Settings) -> FastAPI:
             response.headers["Cache-Control"] = "no-store"
         return response
 
+    token_max_age = 60 * 60 * 24 * 30
+
+    def token_serializer() -> URLSafeTimedSerializer:
+        return URLSafeTimedSerializer(settings.secret_key, salt="libre-potato-token")
+
+    def issue_token() -> str:
+        return token_serializer().dumps({"u": settings.username})
+
+    def read_bearer(request: Request) -> str | None:
+        header = request.headers.get("authorization", "")
+        if len(header) < 8 or header[:7].lower() != "bearer ":
+            return None
+        try:
+            data = token_serializer().loads(header[7:].strip(), max_age=token_max_age)
+        except (BadSignature, SignatureExpired):
+            return None
+        if not isinstance(data, dict) or data.get("u") != settings.username:
+            return None
+        return settings.username
+
+    def signed_in(request: Request) -> bool:
+        return request.session.get("user") == settings.username or read_bearer(request) == settings.username
+
+    def wants_json(request: Request) -> bool:
+        header = request.headers.get("authorization", "")
+        return request.url.path.startswith("/api/") or header.lower().startswith("bearer ")
+
     @app.exception_handler(NotAuthenticated)
-    async def redirect_to_login(_request: Request, _exc: NotAuthenticated) -> RedirectResponse:
+    async def redirect_to_login(request: Request, _exc: NotAuthenticated) -> Response:
+        if wants_json(request):
+            return JSONResponse({"error": "Sign in required."}, status_code=401)
         return RedirectResponse("/login", status_code=303)
 
     def require_login(request: Request) -> None:
-        if request.session.get("user") != settings.username:
+        if not signed_in(request):
             raise NotAuthenticated()
 
     def ensure_csrf(request: Request) -> str:
@@ -383,9 +413,13 @@ def create_app(settings: Settings) -> FastAPI:
         return target
 
     @app.exception_handler(_NotFound)
-    async def render_not_found(request: Request, _exc: _NotFound) -> HTMLResponse:
-        if request.session.get("user") != settings.username:
+    async def render_not_found(request: Request, _exc: _NotFound) -> Response:
+        if not signed_in(request):
+            if wants_json(request):
+                return JSONResponse({"error": "Sign in required."}, status_code=401)
             return RedirectResponse("/login", status_code=303)
+        if wants_json(request):
+            return JSONResponse({"error": "That file is not in your folder."}, status_code=404)
         return missing(request, "That file is not in your folder.")
 
     @app.post("/upload")
@@ -396,56 +430,64 @@ def create_app(settings: Settings) -> FastAPI:
         upload_file: UploadFile = File(...),
     ):
         require_login(request)
-        if not csrf_ok(request, csrf):
-            flash(request, "That form expired. Reload and try again.", "error")
-            return RedirectResponse("/files", status_code=303)
+        token_auth = read_bearer(request) == settings.username
+        if not token_auth and not csrf_ok(request, csrf):
+            return reject(request, directory, "That form expired. Reload and try again.", 400)
         try:
             folder = safe_path(settings.files_root, directory)
             filename = validate_entry_name(upload_file.filename or "")
         except (UnsafePath, InvalidName):
-            flash(request, "Choose a plain file name inside your folder.", "error")
-            return RedirectResponse(back_to(directory), status_code=303)
+            return reject(request, directory, "Choose a plain file name inside your folder.", 400)
         if not is_directory(folder):
-            flash(request, "That folder is not available.", "error")
-            return RedirectResponse("/files", status_code=303)
+            return reject(request, directory, "That folder is not available.", 404)
         destination = folder / filename
         if destination.exists():
-            flash(request, f"{filename} is already there. Rename it on this device and upload again.", "error")
-            return RedirectResponse(back_to(directory), status_code=303)
+            return reject(
+                request,
+                directory,
+                f"{filename} is already there. Rename it on this device and upload again.",
+                409,
+            )
         try:
             await save_upload(upload_file, destination, settings.max_upload_bytes)
         except UploadTooLarge:
-            flash(request, "That file is larger than the upload limit.", "error")
-            return RedirectResponse(back_to(directory), status_code=303)
+            return reject(request, directory, "That file is larger than the upload limit.", 413)
         except OSError:
-            flash(request, "The file could not be saved.", "error")
-            return RedirectResponse(back_to(directory), status_code=303)
-        flash(request, f"Saved {filename}.")
-        return RedirectResponse(back_to(directory), status_code=303)
+            return reject(request, directory, "The file could not be saved.", 500)
+        return accept(request, directory, f"Saved {filename}.")
 
     @app.post("/mkdir")
     async def make_directory(request: Request, directory: str = Form(""), name: str = Form(""), csrf: str = Form("")):
         require_login(request)
-        if not csrf_ok(request, csrf):
-            flash(request, "That form expired. Reload and try again.", "error")
-            return RedirectResponse("/files", status_code=303)
+        token_auth = read_bearer(request) == settings.username
+        if not token_auth and not csrf_ok(request, csrf):
+            return reject(request, directory, "That form expired. Reload and try again.", 400)
         try:
             folder = safe_path(settings.files_root, directory)
             folder_name = validate_entry_name(name)
         except (UnsafePath, InvalidName):
-            flash(request, "Use a plain folder name.", "error")
-            return RedirectResponse(back_to(directory), status_code=303)
+            return reject(request, directory, "Use a plain folder name.", 400)
         if not is_directory(folder):
-            return RedirectResponse("/files", status_code=303)
+            return reject(request, directory, "That folder is not available.", 404)
         destination = folder / folder_name
         try:
             destination.mkdir(exist_ok=False)
         except FileExistsError:
-            flash(request, "That folder already exists.", "error")
+            return reject(request, directory, "That folder already exists.", 409)
         except OSError:
-            flash(request, "The folder could not be created.", "error")
-        else:
-            flash(request, f"Created {folder_name}.")
+            return reject(request, directory, "The folder could not be created.", 500)
+        return accept(request, directory, f"Created {folder_name}.")
+
+    def reject(request: Request, directory: str, message: str, status: int) -> Response:
+        if read_bearer(request):
+            return JSONResponse({"error": message}, status_code=status)
+        flash(request, message, "error")
+        return RedirectResponse(back_to(directory), status_code=303)
+
+    def accept(request: Request, directory: str, message: str) -> Response:
+        if read_bearer(request):
+            return JSONResponse({"ok": True, "message": message})
+        flash(request, message, "ok")
         return RedirectResponse(back_to(directory), status_code=303)
 
     def back_to(directory: str) -> str:
@@ -455,6 +497,75 @@ def create_app(settings: Settings) -> FastAPI:
             return "/files"
         rel = relative_from(folder)
         return url_for(*Path(rel).parts) if rel else "/files"
+
+    def api_entries(directory: Path) -> list[dict]:
+        rows = []
+        for child in directory.iterdir():
+            if child.name.startswith("."):
+                continue
+            try:
+                if is_directory(child):
+                    rows.append(
+                        {"name": child.name, "kind": "folder", "size": None, "modified": modified(child)}
+                    )
+                elif is_regular_file(child):
+                    rows.append(
+                        {
+                            "name": child.name,
+                            "kind": "file",
+                            "size": child.stat().st_size,
+                            "modified": modified(child),
+                        }
+                    )
+            except OSError:
+                continue
+        rows.sort(key=lambda row: (row["kind"] != "folder", row["name"].casefold()))
+        return rows
+
+    @app.post("/api/login")
+    async def api_login(request: Request) -> JSONResponse:
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+        username = body.get("username") if isinstance(body, dict) else None
+        password = body.get("password") if isinstance(body, dict) else None
+        if not isinstance(username, str) or not isinstance(password, str):
+            return JSONResponse({"error": "Send a username and password."}, status_code=400)
+        key = client_key(request)
+        if app.state.lockout.locked(key, time.time()):
+            return JSONResponse(
+                {"error": "Too many tries. Wait a few minutes, then try again."},
+                status_code=429,
+            )
+        password_ok = await asyncio.to_thread(verify_password, password, settings.password_hash)
+        if not (password_ok and equal_text(username, settings.username)):
+            app.state.lockout.record_failure(key, time.time())
+            return JSONResponse({"error": "That username or password is wrong."}, status_code=401)
+        app.state.lockout.clear(key)
+        return JSONResponse(
+            {"token": issue_token(), "token_type": "bearer", "expires_in": token_max_age}
+        )
+
+    @app.get("/api/files")
+    async def api_files(request: Request, path: str = "") -> JSONResponse:
+        require_login(request)
+        try:
+            target = safe_path(settings.files_root, path)
+        except UnsafePath:
+            return JSONResponse({"error": "That path is not in your folder."}, status_code=404)
+        if not is_directory(target):
+            return JSONResponse({"error": "That folder is not available."}, status_code=404)
+        try:
+            entries = await asyncio.to_thread(api_entries, target)
+        except OSError:
+            return JSONResponse({"error": "That folder could not be read."}, status_code=404)
+        rel = relative_from(target)
+        parent = ""
+        if rel:
+            parent_path = Path(rel).parent.as_posix()
+            parent = "" if parent_path == "." else parent_path
+        return JSONResponse({"path": rel, "parent": parent, "entries": entries})
 
     return app
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import uvicorn
@@ -11,6 +12,8 @@ from app.main import create_app
 
 
 def main() -> None:
+    config_home = Path(os.environ["XDG_CONFIG_HOME"]) if os.environ.get("XDG_CONFIG_HOME") else Path.home() / ".config"
+    load_env_file(config_home / "libre-potato" / "env")
     load_env_file(Path.cwd() / ".env")
     settings = Settings.from_env()
     uvicorn.run(
